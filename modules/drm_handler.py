@@ -184,6 +184,27 @@ async def create_category_navigation_index(bot: Client, channel_id: int, tracker
 async def send_with_retry(bot: Client, send_function, max_retries: int = 5, *args, **kwargs):
     """
     Execute a send function with automatic FloodWait retry.
+    """
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            result = await send_function(*args, **kwargs)
+            return result
+        
+        except FloodWait as e:
+            wait_time = e.x
+            print(f"FloodWait! Waiting {wait_time} seconds...")
+            await asyncio.sleep(wait_time + 1)
+            retry_count += 1
+            continue
+        
+        except Exception as e:
+            raise e
+    
+    raise Exception(f"Max retries ({max_retries}) exceeded")
+    """
+    Execute a send function with automatic FloodWait retry.
     This ensures the file is RETRIED, not SKIPPED, when FloodWait occurs.
     """
     retry_count = 0
