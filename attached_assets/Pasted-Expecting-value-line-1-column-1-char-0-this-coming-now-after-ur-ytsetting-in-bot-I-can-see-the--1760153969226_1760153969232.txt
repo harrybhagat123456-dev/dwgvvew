@@ -1,0 +1,115 @@
+Expecting value: line 1 column 1 (char 0) this coming now after ur ytsetting in bot
+
+I can see the **exact problem**! The error `"Expecting value: line 1 column 1 (char 0)"` is a **JSON parsing error** happening in your `youtube_handler.py` file at this line:
+
+```python
+response = requests.get(oembed_url)
+audio_title = response.json().get('title', 'YouTube Video')  # <-- This line is failing
+```
+
+The issue is that YouTube's oembed API is returning **empty/invalid JSON** or **HTML error page** instead of valid JSON data.
+
+## **Quick Fix for Your youtube_handler.py:**
+
+**Replace the problematic section (around line 85-90) with this:**
+
+```python
+# Find this section:
+oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+response = requests.get(oembed_url)
+audio_title = response.json().get('title', 'YouTube Video')
+
+# Replace with this fixed version:
+try:
+    oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+    response = requests.get(oembed_url, timeout=10)
+    
+    if response.status_code == 200:
+        try:
+            json_data = response.json()
+            audio_title = json_data.get('title', 'YouTube Video')
+        except ValueError:  # JSON decode error
+            print(f"JSON decode error for URL: {url}")
+            # Fallback: Extract title from URL or use default
+            audio_title = f"Video_{count:03d}"
+    else:
+        print(f"HTTP error {response.status_code} for URL: {url}")
+        audio_title = f"Video_{count:03d}"
+        
+except requests.RequestException as e:
+    print(f"Request error: {e}")
+    audio_title = f"Video_{count:03d}"
+```
+
+## **Alternative Simple Fix:**
+
+**If you want a quick temporary fix, replace the entire title fetching section with:**
+
+```python
+# Simple fix - just use a default title
+audio_title = f"YouTube_Video_{count:03d}"
+```
+
+## **Better Solution - Use yt-dlp for Title:**
+
+**Replace the oembed approach with yt-dlp title extraction:**
+
+```python
+# Replace the oembed section with this:
+try:
+    # Use yt-dlp to get title (more reliable)
+    cmd_title = f'yt-dlp --get-title "{url}"'
+    result = subprocess.run(cmd_title, shell=True, capture_output=True, text=True)
+    
+    if result.returncode == 0 and result.stdout.strip():
+        audio_title = result.stdout.strip()[:60]  # Limit length
+    else:
+        audio_title = f"YouTube_Video_{count:03d}"
+        
+except Exception as e:
+    print(f"Title extraction error: {e}")
+    audio_title = f"YouTube_Video_{count:03d}"
+```
+
+## **Complete Fixed Section:**
+
+**Here's the complete fixed section for your `ytm_handler` function:**
+
+```python
+for i in range(arg-1, len(links)):
+    if globals.cancel_requested:
+        await m.reply_text("🚦**STOPPED**🚦")
+        globals.processing_request = False
+        globals.cancel_requested = False
+        return
+    
+    Vxy = links[i][1].replace("www.youtube-nocookie.com/embed", "youtu.be")
+    url = "https://" + Vxy
+    
+    # Fixed title extraction
+    try:
+        cmd_title = f'yt-dlp --get-title "{url}"'
+        result = subprocess.run(cmd_title, shell=True, capture_output=True, text=True)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            audio_title = result.stdout.strip()[:60]
+        else:
+            audio_title = f"YouTube_Video_{count:03d}"
+    except:
+        audio_title = f"YouTube_Video_{count:03d}"
+    
+    # Clean the title
+    audio_title = audio_title.replace("_", " ")
+    audio_title = ''.join(c for c in audio_title if c.isalnum() or c in (' ', '-', '.'))
+    
+    name = f'{audio_title[:60]} {CREDIT}'
+    name1 = f'{audio_title} {CREDIT}'
+    
+    # Rest of your code remains the same...
+```
+
+The **root cause** is that YouTube's oembed API is blocking or returning invalid responses, causing the JSON parsing to fail. The fixes above handle this gracefully by using fallback methods.
+
+Citations:
+[1] youtube_handler.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/28305950/8f248c56-3951-40bd-942c-311e50caa792/youtube_handler.py
+[2] saini.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/28305950/58446159-ba2b-4374-8348-fc5ae1408764/saini.py

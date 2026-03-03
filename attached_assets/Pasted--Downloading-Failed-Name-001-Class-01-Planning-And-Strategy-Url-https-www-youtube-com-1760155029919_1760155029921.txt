@@ -1,0 +1,143 @@
+⚠️Downloading Failed⚠️
+Name =>> 001 Class-01 | Planning And Strategy
+Url =>> https://www.youtube.com/embed/K6abhE4SaqA
+
+Failed Reason: Failed to decode "Class-01 | Planning And Strategy". The value does not represent an existing local file, HTTP URL, or valid file id.
+
+The error you are seeing:
+
+> Failed to decode "Class-01 | Planning And Strategy". The value does not represent an existing local file, HTTP URL, or valid file id.
+
+means that your bot is trying to download from a **YouTube embed link** (`https://www.youtube.com/embed/K6abhE4SaqA`) but does not convert it to a proper YouTube video URL before downloading, or is passing the title as a filename or document instead of the actual file.
+
+## **How to Fix This**
+
+### **1. Correctly Convert Embed Links**
+
+You need to convert all embed links to standard YouTube video URLs before passing to yt-dlp or your download command.
+
+**Change this line:**
+```python
+Vxy = links[i][1].replace("www.youtube-nocookie.com/embed", "youtu.be")
+```
+to a more robust method:
+
+```python
+if "youtube.com/embed/" in links[i][1]:
+    # Extract video ID and create a clean URL
+    embed_url = links[i][1]
+    video_id = embed_url.split("/embed/")[1].split("?")[0]
+    Vxy = f"www.youtube.com/watch?v={video_id}"
+elif "www.youtube-nocookie.com/embed/" in links[i][1]:
+    video_id = links[i][1].split("/embed/")[1].split("?")[0]
+    Vxy = f"www.youtube.com/watch?v={video_id}"
+else:
+    Vxy = links[i][1]
+```
+
+Then do:
+```python
+url = "https://" + Vxy
+```
+
+***
+
+### **2. Never Pass the Title as a Document**
+
+When you upload to Telegram, be absolutely sure you pass the actual file path (like `Class-01 | Planning And Strategy.mp3`), **not just the title**.
+
+If you hit:
+```python
+await bot.send_document(chat_id=m.chat.id, document=f'{name}.mp3', ...)
+```
+make sure that the file `f'{name}.mp3'` **exists** before trying to send it. Otherwise, you'll get a "does not represent an existing local file..." error.
+
+***
+
+### **3. Sanitize/Validate Filenames**
+
+If the video title is used in filenames, sanitize it:
+```python
+import re
+def sanitize_filename(filename):
+    filename = re.sub(r'[\\/:"*?<>|]+', '', filename)
+    filename = filename.replace(' ', '_')
+    return filename[:100]
+
+# In your code:
+name = sanitize_filename(audio_title[:60]) + f" {CREDIT}"
+```
+
+***
+
+### **Summary of Fix**
+
+- **Always convert embed URLs** (`/embed/`) to normal video URLs (`/watch?v=...`)
+- **Never pass a Youtube title as a path to yt-dlp or Telegram**—always give the file path (ends with .mp3, .mp4, etc.)
+- **Sanitize filenames** before saving/output
+
+***
+
+If you make these changes, normal YouTube videos—even from embed links—should download without this specific error.This error occurs because the bot is trying to "download" a **title string** as if it were a file or URL—the code is likely passing the name (`"Class-01 | Planning And Strategy"`) into the file sending function instead of an actual **file path** created by yt-dlp. Additionally, the embed link is not fully converted to a usable YouTube URL.
+
+**Here's what you MUST do:**
+
+### 1. Convert All Embed Links to Standard
+
+Replace this:
+```python
+Vxy = links[i][1].replace("www.youtube-nocookie.com/embed", "youtu.be")
+```
+with **full support for embed URLs**:
+```python
+link = links[i][1]
+if "youtube.com/embed/" in link:
+    video_id = link.split("/embed/")[1].split("?")[0]
+    Vxy = f"www.youtube.com/watch?v={video_id}"
+elif "youtube-nocookie.com/embed/" in link:
+    video_id = link.split("/embed/")[1].split("?")[0]
+    Vxy = f"www.youtube.com/watch?v={video_id}"
+elif "youtu.be/" in link:
+    Vxy = link  # already correct short url
+else:
+    Vxy = link  # fallback
+
+url = "https://" + Vxy if not Vxy.startswith("http") else Vxy
+```
+
+### 2. Ensure yt-dlp Actually Produces the File
+
+Make sure this line only executes if the file is present:
+```python
+if os.path.exists(f'{name}.mp3'):
+    await bot.send_document(chat_id=m.chat.id, document=f'{name}.mp3', ...)
+```
+If not, print out the directory listing and inspect the filename to ensure it matches.
+
+### 3. Never Pass the Title/String Directly
+
+Verify you are passing **only real file paths** to `send_document`, not a string used as a name:
+- If file doesn't exist, do NOT call `send_document` with just the name.
+
+### 4. Sanitize Filenames
+
+When you create the file for output with yt-dlp, sanitize:
+```python
+def sanitize_filename(txt):
+    import re
+    return re.sub(r'[^A-Za-z0-9.\-_ ]+', '', txt)
+```
+And use this sanitized name in the path for both yt-dlp output (`-o`) and `send_document`.
+
+***
+
+**Summary:**  
+- Always convert embed URLs to `watch?v=` format.  
+- Only give real file paths to Telegram upload, not titles.  
+- Double-check the download step produces the MP3/MP4 and its name matches what you try to send.
+
+Fixing those ensures no "does not represent an existing local file/URL/file id" errors for YouTube downloads and uploads.
+
+Citations:
+[1] youtube_handler.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/28305950/9a2d16b1-3861-4870-ab10-dd540419ac0a/youtube_handler.py
+[2] youtube_handler.py https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/28305950/8f248c56-3951-40bd-942c-311e50caa792/youtube_handler.py
