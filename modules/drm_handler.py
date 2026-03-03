@@ -49,6 +49,179 @@ import ffmpeg
 # .....,.....,.......,...,.......,....., .....,.....,.......,...,.......,.....,
 
 
+# ============================================================
+# CATEGORY TRACKER CLASS FOR NAVIGATION INDEX
+# ============================================================
+class CategoryTracker:
+    """
+    Track uploaded files by category and store first message ID for each category.
+    Used to generate navigation index at the end of download process.
+    """
+    def __init__(self):
+        self.categories = {}  # {category_name: first_message_id}
+        self.category_counts = {}  # {category_name: count}
+        self.all_uploads = []  # List of (category, name, message_id)
+    
+    def add_upload(self, category: str, name: str, message_id: int):
+        """Add an upload to the tracker."""
+        # Store first message ID for this category
+        if category not in self.categories:
+            self.categories[category] = message_id
+        
+        # Update count
+        self.category_counts[category] = self.category_counts.get(category, 0) + 1
+        
+        # Store all uploads
+        self.all_uploads.append((category, name, message_id))
+    
+    def get_categories(self):
+        """Return all unique categories."""
+        return list(self.categories.keys())
+    
+    def get_first_message_id(self, category: str):
+        """Get the first message ID for a category."""
+        return self.categories.get(category, None)
+    
+    def get_category_count(self, category: str):
+        """Get the count of uploads for a category."""
+        return self.category_counts.get(category, 0)
+
+
+def extract_category_from_link(link_text: str) -> tuple:
+    """
+    Extract category and name from link text.
+    Supports format: [CATEGORY] Name:URL
+    
+    Returns: (category, name, url)
+    """
+    # Pattern: [CATEGORY] Name:URL
+    category_match = re.match(r'\[([^\]]+)\]\s*(.+)$', link_text)
+    
+    if category_match:
+        category = category_match.group(1).strip()
+        rest = category_match.group(2).strip()
+        
+        # Split name and URL by last colon (URLs contain colons like https://)
+        if ':' in rest:
+            # Find the last colon that separates name from URL
+            # URL starts with http:// or https://
+            url_start = rest.find('http')
+            if url_start != -1:
+                name = rest[:url_start].strip().rstrip(':').strip()
+                url = rest[url_start:].strip()
+                return (category, name, url)
+        
+        return (category, rest, "")
+    
+    # No category format, return defaults
+    if ':' in link_text:
+        url_start = link_text.find('http')
+        if url_start != -1:
+            name = link_text[:url_start].strip().rstrip(':').strip()
+            url = link_text[url_start:].strip()
+            return ("General", name, url)
+    
+    return ("General", link_text, "")
+
+
+async def create_category_navigation_index(bot: Client, channel_id: int, tracker: CategoryTracker, b_name: str, CR: str, CREDIT: str):
+    """
+    Create and send a navigation index with clickable links to each category's first message.
+    """
+    categories = tracker.get_categories()
+    
+    if not categories:
+        return None
+    
+    # Build navigation message
+    nav_lines = []
+    nav_lines.append("<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>")
+    nav_lines.append("<b>📚 𝐍𝐀𝐕𝐈𝐆𝐀𝐓𝐈𝐎𝐍 𝐈𝐍𝐃𝐄𝐗</b>")
+    nav_lines.append("<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>")
+    nav_lines.append("")
+    
+    for category in sorted(categories):
+        first_msg_id = tracker.get_first_message_id(category)
+        count = tracker.get_category_count(category)
+        
+        if first_msg_id:
+            # Create clickable link to the first message of this category
+            # Format: https://t.me/c/CHANNEL_ID/MESSAGE_ID (for private channels)
+            # or: https://t.me/CHANNEL_USERNAME/MESSAGE_ID (for public channels)
+            
+            # For private channels, we need to convert channel_id format
+            # channel_id is like -100XXXXXXXXXX, we need just XXXXXXXXXX
+            if str(channel_id).startswith("-100"):
+                channel_num = str(channel_id)[4:]  # Remove -100 prefix
+                link = f"https://t.me/c/{channel_num}/{first_msg_id}"
+            else:
+                link = f"https://t.me/c/{abs(channel_id)}/{first_msg_id}"
+            
+            nav_lines.append(f"📂 <a href=\"{link}\"><b>{category}</b></a> ─ <code>{count} files</code>")
+    
+    nav_lines.append("")
+    nav_lines.append("<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>")
+    nav_lines.append(f"🎯 <b>Batch:</b> {b_name}")
+    nav_lines.append(f"💃 <b>Credit:</b> {CR}")
+    nav_lines.append(f"✦ <b>Bot Made By:</b> {CREDIT}")
+    nav_lines.append("<b>━━━━━━━━━━━━━━━━━━━━━━━━</b>")
+    
+    nav_text = '\n'.join(nav_lines)
+    
+    # Send the navigation index
+    nav_message = await bot.send_message(
+        chat_id=channel_id,
+        text=nav_text,
+        disable_web_page_preview=True
+    )
+    
+    return nav_message
+
+
+# ============================================================
+# FLOODWAIT RETRY DECORATOR
+# ============================================================
+async def send_with_retry(bot: Client, send_function, max_retries: int = 5, *args, **kwargs):
+    """
+    Execute a send function with automatic FloodWait retry.
+    This ensures the file is RETRIED, not SKIPPED, when FloodWait occurs.
+    """
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            result = await send_function(*args, **kwargs)
+            return result
+        
+        except FloodWait as e:
+            wait_time = e.x  # Wait time in seconds
+            print(f"FloodWait encountered! Waiting {wait_time} seconds before retry...")
+            
+            # Notify user about wait (optional, can be commented out)
+            if 'chat_id' in kwargs:
+                try:
+                    await bot.send_message(
+                        kwargs['chat_id'], 
+                        f"⏳ **FloodWait**: Waiting {wait_time} seconds before retry {retry_count + 1}/{max_retries}..."
+                    )
+                except:
+                    pass
+            
+            # Wait the required time
+            await asyncio.sleep(wait_time + 1)  # Add 1 second buffer
+            retry_count += 1
+            continue
+        
+        except Exception as e:
+            # For other errors, raise them
+            raise e
+    
+    raise Exception(f"Max retries ({max_retries}) exceeded due to FloodWait")
+
+
+# ============================================================
+# MAIN DRM HANDLER
+# ============================================================
 async def drm_handler(bot: Client, m: Message):
     globals.processing_request = True
     globals.cancel_requested = False
@@ -65,6 +238,9 @@ async def drm_handler(bot: Client, m: Message):
     res = globals.res
     topic = globals.topic
 
+    # Initialize Category Tracker
+    category_tracker = CategoryTracker()
+
     user_id = m.from_user.id
     if m.document and m.document.file_name.endswith('.txt'):
         x = await m.download()
@@ -77,7 +253,7 @@ async def drm_handler(bot: Client, m: Message):
         lines = content.split("\n")
         os.remove(x)
     elif m.text and "://" in m.text:
-        lines = [m.text]
+        lines = m.text
     else:
         return
 
@@ -175,7 +351,7 @@ async def drm_handler(bot: Client, m: Message):
             b_name = '**Link Input**'
             await m.delete()
         else:
-            editable = await m.reply_text(f"╭━━━━❰ᴇɴᴛᴇʀ ʀᴇꜱᴏʟᴜᴛɪᴏɴ❱━━➣ \n┣━━⪼ send `144`  for 144p\n┣━━⪼ send `240`  for 240p\n┣━━⪼ send `360`  for 360p\n┣━━⪼ send `480`  for 480p\n┣━━⪼ send `720`  for 720p\n┣━━⪼ send `1080` for 1080p\n╰━━⌈⚡[🦋`{CREDIT}`🦋]⚡⌋━━➣ ")
+            editable = await m.reply_text(f"╭━━━━❰ᴇɴᴛᴇʀ ʀᴇsᴏʟᴜᴛɪᴏɴ❱━━➣ \n┣━━⪼ send `144`  for 144p\n┣━━⪼ send `240`  for 240p\n┣━━⪼ send `360`  for 360p\n┣━━⪼ send `480`  for 480p\n┣━━⪼ send `720`  for 720p\n┣━━⪼ send `1080` for 1080p\n╰━━⌈⚡[🦋`{CREDIT}`🦋]⚡⌋━━➣ ")
             input2: Message = await bot.listen(editable.chat.id, filters=filters.text & filters.user(m.from_user.id))
             raw_text2 = input2.text
             quality = f"{raw_text2}p"
@@ -242,6 +418,13 @@ async def drm_handler(bot: Client, m: Message):
             link0 = "https://" + Vxy
 
             name1 = links[i][0].replace("(", "[").replace(")", "]").replace("_", "").replace("\t", "").replace(":", "").replace("/", "").replace("+", "").replace("#", "").replace("|", "").replace("@", "").replace("*", "").replace(".", "").replace("https", "").replace("http", "").strip()
+            
+            # ============================================================
+            # EXTRACT CATEGORY FROM LINK TEXT
+            # ============================================================
+            link_text = links[i][0] if len(links[i]) > 0 else ""
+            category, extracted_name, _ = extract_category_from_link(link_text)
+            
             if m.text:
                 if "youtu" in url:
                     oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
@@ -306,14 +489,14 @@ async def drm_handler(bot: Client, m: Message):
             #elif "d1d34p8vz63oiq" in url or "sec1.pw.live" in url:
             elif "childId" in url and "parentId" in url:
                 url = f"https://anonymouspwplayerrr-3dba7e3fb6a8.herokuapp.com/pw?url={url}&token={pwtoken}"
-                           
+                          
             
             elif 'encrypted.m' in url:
                 appxkey = url.split('*')[1]
                 url = url.split('*')[0]
 
             if "youtu" in url:
-                ytf = f"bv*[height<={raw_text2}][ext=mp4]+ba[ext=m4a]/b[height<=?{raw_text2}]"
+                ytf = f"bv*[height<={raw_text2}][ext=mp4]+ba[ext=m4a]/b[height<={raw_text2}]"
             elif "embed" in url:
                 ytf = f"bestvideo[height<={raw_text2}]+bestaudio/best[height<={raw_text2}]"
             else:
@@ -394,16 +577,40 @@ async def drm_handler(bot: Client, m: Message):
                             ccm = f'<b>{str(count).zfill(3)}.</b> {name1} .mp3'
                             cchtml = f'<b>{str(count).zfill(3)}.</b> {name1} .html'
                     
+                # ============================================================
+                # PDF HANDLING WITH FLOODWAIT RETRY AND RANDOM DELAY
+                # ============================================================
                 if "drive" in url:
                     try:
                         ka = await helper.download(url, name)
-                        copy = await bot.send_document(chat_id=channel_id,document=ka, caption=cc1)
-                        count+=1
+                        # Use retry wrapper for FloodWait handling
+                        copy = await send_with_retry(
+                            bot, 
+                            bot.send_document,
+                            max_retries=5,
+                            chat_id=channel_id,
+                            document=ka,
+                            caption=cc1
+                        )
+                        # Track category
+                        category_tracker.add_upload(category, name1, copy.id)
+                        count += 1
                         os.remove(ka)
+                        # Random delay to prevent FloodWait
+                        await asyncio.sleep(random.uniform(1, 3))
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
-                        continue    
+                        # Wait and RETRY (not skip!)
+                        await asyncio.sleep(e.x + 1)
+                        try:
+                            ka = await helper.download(url, name)
+                            copy = await bot.send_document(chat_id=channel_id, document=ka, caption=cc1)
+                            category_tracker.add_upload(category, name1, copy.id)
+                            count += 1
+                            os.remove(ka)
+                        except Exception as retry_error:
+                            await bot.send_message(channel_id, f'⚠️**Retry Failed**⚠️\n**Name** =>> `{str(count).zfill(3)} {name1}`\n**Url** =>> {url}\n\n<blockquote expandable><i><b>Failed Reason: {str(retry_error)}</b></i></blockquote>', disable_web_page_preview=True)
+                            failed_count += 1
+                            count += 1
   
                 elif ".pdf" in url:
                     if "cwmediabkt99" in url:
@@ -422,8 +629,20 @@ async def drm_handler(bot: Client, m: Message):
                                 if response.status_code == 200:
                                     with open(f'{namef}.pdf', 'wb') as file:
                                         file.write(response.content)
-                                    await asyncio.sleep(retry_delay)  # Optional, to prevent spamming
-                                    copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.pdf', caption=cc1)
+                                    await asyncio.sleep(retry_delay)
+                                    
+                                    # Use retry wrapper for FloodWait handling
+                                    copy = await send_with_retry(
+                                        bot,
+                                        bot.send_document,
+                                        max_retries=5,
+                                        chat_id=channel_id,
+                                        document=f'{namef}.pdf',
+                                        caption=cc1
+                                    )
+                                    
+                                    # Track category
+                                    category_tracker.add_upload(category, name1, copy.id)
                                     count += 1
                                     os.remove(f'{namef}.pdf')
                                     success = True
@@ -432,6 +651,10 @@ async def drm_handler(bot: Client, m: Message):
                                     failure_msg = await m.reply_text(f"Attempt {attempt + 1}/{max_retries} failed: {response.status_code} {response.reason}")
                                     failure_msgs.append(failure_msg)
                                     
+                            except FloodWait as e:
+                                # Wait and RETRY
+                                await asyncio.sleep(e.x + 1)
+                                continue
                             except Exception as e:
                                 failure_msg = await m.reply_text(f"Attempt {attempt + 1}/{max_retries} failed: {str(e)}")
                                 failure_msgs.append(failure_msg)
@@ -439,31 +662,65 @@ async def drm_handler(bot: Client, m: Message):
                                 continue 
                         for msg in failure_msgs:
                             await msg.delete()
+                        
+                        # Random delay after PDF upload
+                        await asyncio.sleep(random.uniform(1, 3))
                             
                     else:
                         try:
                             cmd = f'yt-dlp -o "{namef}.pdf" "{url}"'
                             download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                             os.system(download_cmd)
-                            copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.pdf', caption=cc1)
+                            
+                            # Use retry wrapper for FloodWait handling
+                            copy = await send_with_retry(
+                                bot,
+                                bot.send_document,
+                                max_retries=5,
+                                chat_id=channel_id,
+                                document=f'{namef}.pdf',
+                                caption=cc1
+                            )
+                            
+                            # Track category
+                            category_tracker.add_upload(category, name1, copy.id)
                             count += 1
                             os.remove(f'{namef}.pdf')
+                            
+                            # Random delay to prevent FloodWait (PDFs download fast!)
+                            await asyncio.sleep(random.uniform(2, 4))
+                            
                         except FloodWait as e:
-                            await m.reply_text(str(e))
-                            time.sleep(e.x)
-                            continue    
+                            # Wait and RETRY (not skip!)
+                            await asyncio.sleep(e.x + 1)
+                            try:
+                                copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.pdf', caption=cc1)
+                                category_tracker.add_upload(category, name1, copy.id)
+                                count += 1
+                                os.remove(f'{namef}.pdf')
+                            except Exception as retry_error:
+                                await bot.send_message(channel_id, f'⚠️**Retry Failed**⚠️\n**Name** =>> `{str(count).zfill(3)} {name1}`\n**Url** =>> {url}\n\n<blockquote expandable><i><b>Failed Reason: {str(retry_error)}</b></i></blockquote>', disable_web_page_preview=True)
+                                failed_count += 1
+                                count += 1    
 
                 elif ".ws" in url and  url.endswith(".ws"):
                     try:
                         await helper.pdf_download(f"{api_url}utkash-ws?url={url}&authorization={api_token}",f"{name}.html")
                         time.sleep(1)
-                        await bot.send_document(chat_id=channel_id, document=f"{name}.html", caption=cchtml)
+                        copy = await bot.send_document(chat_id=channel_id, document=f"{name}.html", caption=cchtml)
+                        category_tracker.add_upload(category, name1, copy.id)
                         os.remove(f'{name}.html')
                         count += 1
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
-                        continue    
+                        await asyncio.sleep(e.x + 1)
+                        try:
+                            copy = await bot.send_document(chat_id=channel_id, document=f"{name}.html", caption=cchtml)
+                            category_tracker.add_upload(category, name1, copy.id)
+                            os.remove(f'{name}.html')
+                            count += 1
+                        except Exception as retry_error:
+                            failed_count += 1
+                            count += 1
                             
                 elif any(ext in url for ext in [".jpg", ".jpeg", ".png"]):
                     try:
@@ -471,13 +728,34 @@ async def drm_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{namef}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await bot.send_photo(chat_id=channel_id, photo=f'{namef}.{ext}', caption=ccimg)
+                        
+                        # Use retry wrapper
+                        copy = await send_with_retry(
+                            bot,
+                            bot.send_photo,
+                            max_retries=5,
+                            chat_id=channel_id,
+                            photo=f'{namef}.{ext}',
+                            caption=ccimg
+                        )
+                        
+                        category_tracker.add_upload(category, name1, copy.id)
                         count += 1
                         os.remove(f'{namef}.{ext}')
+                        
+                        # Random delay
+                        await asyncio.sleep(random.uniform(1, 2))
+                        
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
-                        continue    
+                        await asyncio.sleep(e.x + 1)
+                        try:
+                            copy = await bot.send_photo(chat_id=channel_id, photo=f'{namef}.{ext}', caption=ccimg)
+                            category_tracker.add_upload(category, name1, copy.id)
+                            count += 1
+                            os.remove(f'{namef}.{ext}')
+                        except Exception:
+                            failed_count += 1
+                            count += 1    
 
                 elif any(ext in url for ext in [".mp3", ".wav", ".m4a"]):
                     try:
@@ -485,13 +763,32 @@ async def drm_handler(bot: Client, m: Message):
                         cmd = f'yt-dlp -o "{namef}.{ext}" "{url}"'
                         download_cmd = f"{cmd} -R 25 --fragment-retries 25"
                         os.system(download_cmd)
-                        copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.{ext}', caption=ccm)
+                        
+                        copy = await send_with_retry(
+                            bot,
+                            bot.send_document,
+                            max_retries=5,
+                            chat_id=channel_id,
+                            document=f'{namef}.{ext}',
+                            caption=ccm
+                        )
+                        
+                        category_tracker.add_upload(category, name1, copy.id)
                         count += 1
                         os.remove(f'{namef}.{ext}')
+                        
+                        await asyncio.sleep(random.uniform(1, 2))
+                        
                     except FloodWait as e:
-                        await m.reply_text(str(e))
-                        time.sleep(e.x)
-                        continue    
+                        await asyncio.sleep(e.x + 1)
+                        try:
+                            copy = await bot.send_document(chat_id=channel_id, document=f'{namef}.{ext}', caption=ccm)
+                            category_tracker.add_upload(category, name1, copy.id)
+                            count += 1
+                            os.remove(f'{namef}.{ext}')
+                        except Exception:
+                            failed_count += 1
+                            count += 1    
                     
                 elif 'encrypted.m' in url:    
                     remaining_links = len(links) - count
@@ -518,7 +815,9 @@ async def drm_handler(bot: Client, m: Message):
                     filename = res_file  
                     await prog1.delete(True)
                     await prog.delete(True)
-                    await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    sent_msg = await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    if sent_msg:
+                        category_tracker.add_upload(category, name1, sent_msg.id)
                     count += 1  
                     await asyncio.sleep(1)  
                     continue  
@@ -548,7 +847,9 @@ async def drm_handler(bot: Client, m: Message):
                     filename = res_file
                     await prog1.delete(True)
                     await prog.delete(True)
-                    await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    sent_msg = await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    if sent_msg:
+                        category_tracker.add_upload(category, name1, sent_msg.id)
                     count += 1
                     await asyncio.sleep(1)
                     continue
@@ -578,7 +879,9 @@ async def drm_handler(bot: Client, m: Message):
                     filename = res_file
                     await prog1.delete(True)
                     await prog.delete(True)
-                    await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    sent_msg = await helper.send_vid(bot, m, cc, filename, vidwatermark, thumb, name, prog, channel_id)
+                    if sent_msg:
+                        category_tracker.add_upload(category, name1, sent_msg.id)
                     count += 1
                     time.sleep(1)
                 
@@ -592,8 +895,16 @@ async def drm_handler(bot: Client, m: Message):
         await m.reply_text(e)
         time.sleep(2)
 
+    # ============================================================
+    # GENERATE NAVIGATION INDEX AT THE END
+    # ============================================================
     success_count = len(links) - failed_count
     video_count = v2_count + mpd_count + m3u8_count + yt_count + drm_count + zip_count + other_count
+    
+    # Send navigation index before completion message
+    if category_tracker.get_categories():
+        await create_category_navigation_index(bot, channel_id, category_tracker, b_name, CR, CREDIT)
+    
     if m.document:
         if raw_text7 == "/d":
             await bot.send_message(channel_id, f"<b>-┈━═.•°✅ Completed ✅°•.═━┈-</b>\n<blockquote><b>🎯Batch Name : {b_name}</b></blockquote>\n<blockquote>🔗 Total URLs: {len(links)} \n┃   ┠🔴 Total Failed URLs: {failed_count}\n┃   ┠🟢 Total Successful URLs: {success_count}\n┃   ┃   ┠🎥 Total Video URLs: {video_count}\n┃   ┃   ┠📄 Total PDF URLs: {pdf_count}\n┃   ┃   ┠📸 Total IMAGE URLs: {img_count}</blockquote>\n")
@@ -601,8 +912,10 @@ async def drm_handler(bot: Client, m: Message):
             await bot.send_message(channel_id, f"<b>-┈━═.•°✅ Completed ✅°•.═━┈-</b>\n<blockquote><b>🎯Batch Name : {b_name}</b></blockquote>\n<blockquote>🔗 Total URLs: {len(links)} \n┃   ┠🔴 Total Failed URLs: {failed_count}\n┃   ┠🟢 Total Successful URLs: {success_count}\n┃   ┃   ┠🎥 Total Video URLs: {video_count}\n┃   ┃   ┠📄 Total PDF URLs: {pdf_count}\n┃   ┃   ┠📸 Total IMAGE URLs: {img_count}</blockquote>\n")
             await bot.send_message(m.chat.id, f"<blockquote><b>✅ Your Task is completed, please check your Set Channel📱</b></blockquote>")
 
+    # Reset processing flag
+    globals.processing_request = False
+
 
 def register_drm_handlers(bot):
     from pyrogram import filters as f
     bot.on_message(f.private & (f.document | f.text))(drm_handler)
-
