@@ -169,6 +169,147 @@ async def cancel_handler(client: Client, m: Message):
             await m.reply_text("**⚡ No active process to cancel.**")
 
 
+# .....,.....,.......,...,.......,....., .....,.....,.......,...,.......,.....,
+# JSON TO TXT CONVERTER COMMAND
+# .....,.....,.......,...,.......,....., .....,.....,.......,...,.......,.....,
+@bot.on_message(filters.command("json2txt") & filters.private)
+async def json2txt_handler(bot: Client, m: Message):
+    """
+    Convert JSON file to TXT format: [CATEGORY] Name:URL
+    Supports nested JSON structures and extracts video/PDF links.
+    """
+    if m.chat.id not in AUTH_USERS:
+        await m.reply_text(
+            f"<blockquote>__**Oopss! You are not a Premium member**__\n"
+            f"__**Please Upgrade Your Plan**__\n"
+            f"__**Your User id** __- `{m.chat.id}`</blockquote>\n\n"
+        )
+        return
+    
+    # Ask for JSON file
+    ask_msg = await m.reply_text(
+        "**📤 JSON to TXT Converter**\n\n"
+        "Send me a JSON file to convert.\n\n"
+        "**Output format:**\n`[CATEGORY] Name:URL`\n\n"
+        "Send /cancel to abort."
+    )
+    
+    try:
+        # Wait for JSON file
+        response: Message = await bot.listen(m.chat.id, timeout=120)
+        
+        if response.text and response.text.lower() == "/cancel":
+            await ask_msg.delete()
+            await response.delete()
+            return
+        
+        if not response.document:
+            await m.reply_text("**❌ Please send a JSON file!**")
+            await ask_msg.delete()
+            return
+        
+        if not response.document.file_name.endswith('.json'):
+            await m.reply_text("**❌ File must be a .json file!**")
+            await ask_msg.delete()
+            return
+        
+        # Download JSON file
+        status_msg = await m.reply_text("**📥 Downloading JSON file...**")
+        json_path = await response.download()
+        
+        # Read and parse JSON
+        with open(json_path, 'r', encoding='utf-8') as f:
+            try:
+                json_data = json.load(f)
+            except json.JSONDecodeError as e:
+                await status_msg.edit(f"**❌ Invalid JSON file!**\nError: {e}")
+                os.remove(json_path)
+                return
+        
+        # Extract links from JSON
+        extracted_lines = []
+        
+        def extract_from_json(data, current_category="General"):
+            """Recursively extract links from JSON structure."""
+            if isinstance(data, dict):
+                # Check for common video/PDF URL fields
+                url_fields = ['url', 'link', 'videoUrl', 'video_url', 'pdfUrl', 'pdf_url', 
+                              'downloadUrl', 'download_url', 'fileUrl', 'file_url', 'src']
+                name_fields = ['name', 'title', 'fileName', 'file_name', 'videoName', 
+                               'video_name', 'pdfName', 'pdf_name']
+                
+                # Get category if available
+                category = data.get('category', data.get('subject', data.get('topic', current_category)))
+                name = None
+                url = None
+                
+                # Extract name
+                for field in name_fields:
+                    if field in data and data[field]:
+                        name = str(data[field])
+                        break
+                
+                # Extract URL
+                for field in url_fields:
+                    if field in data and data[field]:
+                        url = str(data[field])
+                        break
+                
+                # If we found both name and url
+                if name and url:
+                    if '://' in url:  # Valid URL check
+                        extracted_lines.append(f"[{category}] {name}:{url}")
+                
+                # Recursively process nested structures
+                for key, value in data.items():
+                    if key not in url_fields and key not in name_fields:
+                        if isinstance(value, (dict, list)):
+                            extract_from_json(value, category)
+            
+            elif isinstance(data, list):
+                for item in data:
+                    extract_from_json(item, current_category)
+        
+        # Process JSON data
+        extract_from_json(json_data)
+        
+        if not extracted_lines:
+            await status_msg.edit("**❌ No valid links found in JSON file!**\n\nMake sure the JSON contains URL fields like 'url', 'videoUrl', 'pdfUrl', etc.")
+            os.remove(json_path)
+            return
+        
+        # Create output TXT file
+        output_filename = os.path.splitext(response.document.file_name)[0] + ".txt"
+        output_path = os.path.join(os.path.dirname(json_path), output_filename)
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(extracted_lines))
+        
+        # Send the TXT file
+        await status_msg.edit(f"**✅ Conversion Complete!**\n\n"
+                              f"**Total links extracted:** {len(extracted_lines)}\n\n"
+                              f"**Sending file...**")
+        
+        await m.reply_document(
+            document=output_path,
+            caption=f"**📄 JSON → TXT Conversion**\n\n"
+                    f"**Total Links:** {len(extracted_lines)}\n"
+                    f"**Format:** `[CATEGORY] Name:URL`"
+        )
+        
+        # Cleanup
+        os.remove(json_path)
+        os.remove(output_path)
+        await ask_msg.delete()
+        await response.delete()
+        await status_msg.delete()
+        
+    except asyncio.TimeoutError:
+        await ask_msg.edit("**⏰ Timeout! Please try again.**")
+    except Exception as e:
+        await m.reply_text(f"**❌ Error:**\n<blockquote>{str(e)}</blockquote>")
+
+
 #=================================================================
 
 register_text_handlers(bot)
@@ -205,6 +346,7 @@ def reset_and_set_commands():
         {"command": "ytm", "description": "🎶 YouTube → .mp3 downloader"},
         {"command": "t2t", "description": "📟 Text → .txt Generator"},
         {"command": "t2h", "description": "🌐 .txt → .html Converter"},
+        {"command": "json2txt", "description": "📄 JSON → .txt Converter"},
         {"command": "logs", "description": "👁️ View Bot Activity"},
     ]
     # Owner ke liye extra commands
