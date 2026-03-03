@@ -19,7 +19,7 @@ if not api_id_str:
     environ["API_ID"] = api_id_str
     environ["API_HASH"] = "127b73bd59f71ee4ade8bb2161f1228f"
     environ["OWNER"] = "7385595817"
-    environ["BOT_TOKEN"] = "8304200645:AAHI0AzhiGQlcCXHUA5k291kJaPXdIPJOD4"
+    environ["BOT_TOKEN"] = "8130030544:AAE2SwMJS68IakxKmVXnPYpwBlz5_vCprWs"
 
 api_id_str = environ.get("API_ID")
 if not api_id_str:
